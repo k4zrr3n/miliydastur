@@ -355,14 +355,48 @@ ${l.fullName}`;ae(e)},le=e=>{navigator.clipboard.writeText(e),b(!0),setTimeout((
  let client=null,session=null;
  function status(t){$('mc-status').textContent=t}
  function getState(){return Object.assign({siteOpen:true,studentsOpen:true,materials:[]},read())}
+ async function loadMaterials(){
+   const list=$('mc-materials');
+   list.replaceChildren();
+   if(!client||!session){list.textContent='Materiallarni ko‘rish uchun tizimga kiring.';return}
+   list.textContent='Materiallar yuklanmoqda…';
+   try{
+     const {data,error}=await client.from('learning_materials')
+       .select('id,title,description,storage_path,file_name,mime_type,created_at')
+       .eq('is_published',true).order('created_at',{ascending:false});
+     if(error)throw error;
+     list.replaceChildren();
+     if(!data||!data.length){list.textContent='Hozircha materiallar yo‘q.';return}
+     for(const m of data){
+       const li=document.createElement('li');
+       const label=document.createElement('span');
+       label.textContent=m.title+(m.file_name?' — '+m.file_name:'');
+       li.appendChild(label);
+       if(m.storage_path){
+         const open=document.createElement('button');open.type='button';open.className='secondary';open.textContent='Faylni ochish';
+         open.onclick=async()=>{open.disabled=true;try{
+           const {data:d,error:e}=await client.storage.from('learning-materials').createSignedUrl(m.storage_path,300);
+           if(e)throw e;window.open(d.signedUrl,'_blank','noopener');
+         }catch(e){alert('Fayl ochilmadi: '+e.message)}finally{open.disabled=false}};
+         li.appendChild(open);
+       }
+       const del=document.createElement('button');del.type='button';del.className='secondary';del.textContent='O‘chirish';
+       del.onclick=async()=>{if(!confirm('Ushbu materialni o‘chirmoqchimisiz?'))return;del.disabled=true;try{
+         if(m.storage_path){const {error:e}=await client.storage.from('learning-materials').remove([m.storage_path]);if(e)throw e}
+         const {error}=await client.from('learning_materials').delete().eq('id',m.id);if(error)throw error;
+         await loadMaterials();
+       }catch(e){alert('O‘chirish amalga oshmadi: '+e.message);del.disabled=false}};
+       li.appendChild(del);list.appendChild(li);
+     }
+   }catch(e){list.replaceChildren();list.textContent='Materiallarni yuklashda xatolik: '+e.message;console.error('learning_materials:',e)}
+ }
  function render(){
    const s=getState();
    $('mc-site-state').textContent=s.siteOpen?'Ochiq':'Yopiq';
    $('mc-student-state').textContent=s.studentsOpen?'Ruxsat berilgan':'Bloklangan';
    $('mc-site-toggle').textContent=s.siteOpen?'Platformani yopish':'Platformani ochish';
    $('mc-student-toggle').textContent=s.studentsOpen?'O‘quvchilarni bloklash':'O‘quvchilarga ruxsat berish';
-   const list=$('mc-materials');list.innerHTML='';
-   s.materials.forEach((m,i)=>{const li=document.createElement('li');const span=document.createElement('span');span.textContent=m.title+(m.file?' — '+m.file:'');const b=document.createElement('button');b.className='secondary';b.textContent='O‘chirish';b.onclick=()=>{const x=getState();x.materials.splice(i,1);write(x);render()};li.append(span,b);list.appendChild(li)});
+   loadMaterials();
  }
  async function loadSupabase(){
    if (typeof window.getSupabaseClient === 'function') {
@@ -459,7 +493,31 @@ $('mc-signin').onclick = async () => {
  $('mc-refresh-students').onclick=loadStudentProfiles;
  $('mc-site-toggle').onclick=()=>{const s=getState();s.siteOpen=!s.siteOpen;write(s);render()};
  $('mc-student-toggle').onclick=()=>{const s=getState();s.studentsOpen=!s.studentsOpen;write(s);render()};
- $('mc-add-material').onclick=()=>{const title=$('mc-material-title').value.trim();const file=$('mc-file').files[0];if(!title){alert('Material nomini kiriting');return}const s=getState();s.materials.push({title,file:file?.name||'',addedAt:new Date().toISOString()});write(s);$('mc-material-title').value='';$('mc-file').value='';render()};
+ $('mc-add-material').onclick=async()=>{
+   const title=$('mc-material-title').value.trim(),file=$('mc-file').files[0],button=$('mc-add-material');
+   if(!title){alert('Material nomini kiriting');return}
+   if(!client||!session){alert('Avval tizimga kiring');return}
+   button.disabled=true;button.textContent='Yuklanmoqda…';
+   let storagePath=null;
+   try{
+     if(file){
+       const safeName=file.name.replace(/[^a-zA-Z0-9._-]/g,'_');
+       storagePath=session.user.id+'/'+crypto.randomUUID()+'-'+safeName;
+       const {error}=await client.storage.from('learning-materials').upload(storagePath,file,{contentType:file.type||'application/octet-stream',upsert:false});
+       if(error)throw error;
+     }
+     const {error}=await client.from('learning_materials').insert({
+       title,description:'',category:'Umumiy',file_name:file?file.name:null,
+       mime_type:file?file.type:null,storage_path:storagePath,is_published:true,created_by:session.user.id
+     });
+     if(error)throw error;
+     $('mc-material-title').value='';$('mc-file').value='';
+     await loadMaterials();status('Material umumiy ro‘yxatga saqlandi.');
+   }catch(e){
+     if(storagePath)try{await client.storage.from('learning-materials').remove([storagePath])}catch(_){}
+     alert('Saqlashda xatolik: '+e.message);console.error('Material upload:',e);
+   }finally{button.disabled=false;button.textContent='Materialni ro‘yxatga qo‘shish'}
+ };
 
  $('mc-signout').onclick=async()=>{try{if(client)await client.auth.signOut()}catch(e){}session=null;$('mc-dashboard').hidden=true;$('mc-login').hidden=false;status('Chiqdingiz')};
  // Remove the old in-app "download site" / "export site" entry points, without hiding ordinary file downloads.
